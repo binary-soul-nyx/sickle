@@ -1,0 +1,1 @@
+"""Telegram entry package."""
