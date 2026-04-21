@@ -1,0 +1,20 @@
+[telegram]
+bot_token = "telegram-bot-token"
+allowed_user_ids = [123456789]
+
+[llm]
+default_model = "gpt-4o"
+timeout = 60
+retry = 3
+
+[operator]
+exec_timeout = 30
+max_consecutive_failures = 3
+large_output_threshold = 1000
+
+[agents]
+sleep_check_hour = 3
+default_sleep_after_days = 7
+
+[logging]
+level = "INFO"
