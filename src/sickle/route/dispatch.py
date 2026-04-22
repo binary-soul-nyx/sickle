@@ -95,23 +95,25 @@ class Dispatch:
 
                 execute_call = self._try_extract_execute_code(turn_result.tool_calls)
                 if execute_call is not None and active_agent == "operator":
-                    logger.debug(
-                        "dispatch.run execute_code request_id=%s tool_call_id=%s is_final=%s code=%s",
+                    attempt = operator_failures + 1
+                    logger.info(
+                        "dispatch.run execute_code request_id=%s attempt=%s is_final=%s code=%s",
                         request_id,
-                        execute_call.id,
+                        attempt,
                         execute_call.is_final,
-                        clip_text(execute_call.code, max_chars=320),
+                        clip_text(execute_call.code, max_chars=400),
                     )
                     exec_result = await self.sandbox_executor.execute(execute_call.code)
                     artifacts.extend(exec_result.artifacts)
                     tool_content = self._serialize_execute_result(exec_result)
-                    logger.debug(
-                        "dispatch.run execute_result request_id=%s success=%s artifacts=%s stdout=%s stderr=%s",
+                    logger.info(
+                        "dispatch.run execute_result request_id=%s attempt=%s success=%s is_final=%s artifacts=%s stderr=%s",
                         request_id,
+                        attempt,
                         exec_result.success,
+                        execute_call.is_final,
                         len(exec_result.artifacts),
-                        clip_text(exec_result.stdout, max_chars=240),
-                        clip_text(exec_result.stderr, max_chars=240),
+                        clip_text(exec_result.stderr, max_chars=200),
                     )
                     self.history.append(
                         "operator",

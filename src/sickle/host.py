@@ -159,12 +159,12 @@ class Sickle:
                 len(response.files),
             )
             logger.info(
-                "host.handle_message done user_id=%s request_id=%s has_text=%s files=%s chain=%s",
+                "host.handle_message done user_id=%s request_id=%s has_text=%s files=%s flow=%s",
                 user_id,
                 ctx.request_id,
                 bool(response.text),
                 len(response.files),
-                ctx.chain,
+                "→".join(ctx.chain) if ctx.chain else ctx.entry_agent,
             )
             return response
         except AgentBusyError:
