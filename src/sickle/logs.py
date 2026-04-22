@@ -9,15 +9,27 @@ _REDACTED = "***XXX***"
 _SENSITIVE_KEYWORDS = ("api_key", "token", "secret", "password", "authorization")
 
 
+class _SickleOnlyDebugFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith("sickle."):
+            return True
+        return record.levelno >= logging.WARNING
+
+
 def configure_logging(level: str | None = None) -> None:
     effective_level = (level or os.getenv("SICKLE_LOG_LEVEL") or "INFO").upper()
     numeric_level = getattr(logging, effective_level, logging.INFO)
 
     logging.basicConfig(
-        level=numeric_level,
+        level=logging.NOTSET,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
     )
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.addFilter(_SickleOnlyDebugFilter())
+    logging.getLogger("sickle").setLevel(numeric_level)
 
 
 def get_logger(module: str) -> logging.Logger:
