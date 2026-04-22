@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import platform
+from pathlib import Path
 
-from ..base import Agent
 from ...llm import LLMClient
 from ...tools.executor import build_execute_code_tool_schema
 from ...tools.toolkit import render_toolkit_docs
+from ..base import Agent
 
 
 class OperatorAgent(Agent):
@@ -32,6 +33,7 @@ class OperatorAgent(Agent):
                 "Only use toolkit functions with module prefixes (for example: fs.exists, fs.list_dir, fs.read, process.run).",
                 "Do not call bare names like exists/list_dir/read/run.",
                 "Follow sandbox and safety constraints strictly.",
+                "Reply in plain text only. Do not use any markdown formatting (no **, __, `, #, -, etc.).",
                 "",
                 self._toolkit_docs,
                 "",
@@ -40,8 +42,9 @@ class OperatorAgent(Agent):
         )
 
     def _collect_system_info(self) -> str:
+        home = Path.home()
         return (
             f"os={platform.system()} {platform.release()}, "
-            f"hostname={platform.node()}, "
-            f"python={platform.python_version()}"
+            f"python={platform.python_version()}, "
+            f"home={home}, "
         )
