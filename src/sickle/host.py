@@ -77,6 +77,12 @@ class Sickle:
         }
         logger.debug("host.init agents=%s", sorted(self.agents.keys()))
         self.history = HistoryManager()
+        logger.info(
+            "host.init model=%s agents=%s allowed_users=%s",
+            self.config.llm.default_model,
+            sorted(self.agents.keys()),
+            len(self.allowed_user_ids),
+        )
 
     def _is_allowed(self, user_id: int) -> bool:
         return user_id in self.allowed_user_ids
@@ -88,12 +94,11 @@ class Sickle:
 
     async def handle_message(self, user_id: int, text: str) -> Response:
         if not self._is_allowed(user_id):
-            logger.debug(
-                "host.handle_message ignored user_id=%s because not_allowed", user_id
-            )
+            logger.warning("host.handle_message rejected user_id=%s reason=not_allowed", user_id)
             return Response.empty()
         runtime = self._get_user_runtime(user_id)
         self.history = runtime.history
+        logger.info("host.handle_message user_id=%s text_len=%s", user_id, len(text))
         logger.debug(
             "host.handle_message received user_id=%s text=%s",
             user_id,
@@ -153,6 +158,14 @@ class Sickle:
                 clip_text(response.text or "", max_chars=200),
                 len(response.files),
             )
+            logger.info(
+                "host.handle_message done user_id=%s request_id=%s has_text=%s files=%s chain=%s",
+                user_id,
+                ctx.request_id,
+                bool(response.text),
+                len(response.files),
+                ctx.chain,
+            )
             return response
         except AgentBusyError:
             runtime.history.rollback(snapshot)
@@ -190,8 +203,8 @@ class Sickle:
         args: list[str],
     ) -> Response:
         if not self._is_allowed(user_id):
-            logger.debug(
-                "host.handle_command ignored user_id=%s cmd=%s reason=not_allowed",
+            logger.warning(
+                "host.handle_command rejected user_id=%s cmd=%s reason=not_allowed",
                 user_id,
                 cmd,
             )
@@ -233,9 +246,7 @@ class Sickle:
 
     async def handle_button(self, user_id: int, callback_id: str) -> Response:
         if not self._is_allowed(user_id):
-            logger.debug(
-                "host.handle_button ignored user_id=%s reason=not_allowed", user_id
-            )
+            logger.warning("host.handle_button rejected user_id=%s reason=not_allowed", user_id)
             return Response.empty()
         logger.debug(
             "host.handle_button user_id=%s callback_id=%s",

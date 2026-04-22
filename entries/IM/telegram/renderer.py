@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
+from sickle.logs import clip_text, get_logger
 from sickle.route.response import Button, Response
+
+logger = get_logger("telegram.renderer")
 
 TELEGRAM_MAX_TEXT_LENGTH = 4096
 
@@ -18,12 +21,21 @@ async def render_response(update: Any, context: Any, response: Response) -> None
 
     reply_markup = _build_reply_markup(response.buttons)
     for chunk in _split_text(response.text):
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=chunk,
-            disable_notification=response.silent,
-            reply_markup=reply_markup,
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                disable_notification=response.silent,
+                reply_markup=reply_markup,
+            )
+        except Exception as exc:
+            logger.error(
+                "renderer.send_message failed chat_id=%s chunk_len=%s error=%s",
+                chat_id,
+                len(chunk),
+                exc,
+            )
+            raise
         reply_markup = None
 
     for file_path in response.files:
@@ -77,6 +89,7 @@ def _build_reply_markup(buttons: list[list[Button]]) -> Any | None:
 
 async def _send_file(context: Any, chat_id: int, file_path: Path, silent: bool) -> None:
     if not file_path.exists():
+        logger.warning("renderer.send_file missing_file chat_id=%s path=%s", chat_id, file_path)
         await context.bot.send_message(
             chat_id=chat_id,
             text=f"[missing file] {file_path}",
@@ -84,9 +97,19 @@ async def _send_file(context: Any, chat_id: int, file_path: Path, silent: bool) 
         )
         return
 
+    logger.debug("renderer.send_file chat_id=%s path=%s", chat_id, file_path.name)
     with file_path.open("rb") as handle:
-        await context.bot.send_document(
-            chat_id=chat_id,
-            document=handle,
-            disable_notification=silent,
-        )
+        try:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=handle,
+                disable_notification=silent,
+            )
+        except Exception as exc:
+            logger.error(
+                "renderer.send_document failed chat_id=%s path=%s error=%s",
+                chat_id,
+                file_path.name,
+                exc,
+            )
+            raise

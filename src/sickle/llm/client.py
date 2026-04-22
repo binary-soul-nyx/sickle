@@ -135,6 +135,12 @@ class LLMClient:
                     break
                 await asyncio.sleep(min(2 ** (attempt - 1), 8))
 
+        logger.error(
+            "llm.manual_retry exhausted model=%s attempts=%s last_error=%s",
+            model,
+            self.retry,
+            last_error,
+        )
         raise LLMUnavailable(str(last_error) if last_error else "LLM retry exhausted")
 
     async def _run_completion(

@@ -62,7 +62,7 @@ class Dispatch:
         hops = 0
 
         if active_agent == "operator":
-            await self._acquire_operator_lock()
+            await self._acquire_operator_lock(request_id)
             operator_lock_owned = True
             logger.debug("dispatch.run operator_lock acquired request_id=%s", request_id)
 
@@ -129,9 +129,10 @@ class Dispatch:
 
                     if operator_failures >= self.max_operator_failures:
                         logger.warning(
-                            "dispatch.run operator_failures_exceeded request_id=%s failures=%s",
+                            "dispatch.run operator_failures_exceeded request_id=%s failures=%s last_stderr=%s",
                             request_id,
                             operator_failures,
+                            clip_text(exec_result.stderr, max_chars=300),
                         )
                         payload = json.dumps(
                             {
@@ -226,7 +227,7 @@ class Dispatch:
                         continue
 
                     if route_call.to == "operator" and not operator_lock_owned:
-                        await self._acquire_operator_lock()
+                        await self._acquire_operator_lock(request_id)
                         operator_lock_owned = True
                         logger.debug(
                             "dispatch.run operator_lock acquired_on_route request_id=%s",
@@ -235,11 +236,15 @@ class Dispatch:
 
                     stack.append(_RouteFrame(caller=active_agent, tool_call_id=route_call.id))
                     ctx.chain.append(route_call.to)
-                    logger.debug(
-                        "dispatch.run route request_id=%s from_agent=%s to_agent=%s tool_call_id=%s content=%s",
+                    logger.info(
+                        "dispatch.run route request_id=%s from_agent=%s to_agent=%s",
                         request_id,
                         active_agent,
                         route_call.to,
+                    )
+                    logger.debug(
+                        "dispatch.run route_detail request_id=%s tool_call_id=%s content=%s",
+                        request_id,
                         route_call.id,
                         clip_text(route_call.content, max_chars=240),
                     )
@@ -291,9 +296,10 @@ class Dispatch:
                 active_agent = frame.caller
 
             logger.warning(
-                "dispatch.run hop_limit_exceeded request_id=%s max_hops=%s",
+                "dispatch.run hop_limit_exceeded request_id=%s max_hops=%s chain=%s",
                 request_id,
                 self.max_hops,
+                ctx.chain,
             )
             return Response(
                 text="route loop exceeded hop limit",
@@ -360,8 +366,11 @@ class Dispatch:
             },
         )
 
-    async def _acquire_operator_lock(self) -> None:
+    async def _acquire_operator_lock(self, request_id: str = "") -> None:
         if self.operator_lock.locked():
-            logger.debug("dispatch.lock operator_busy")
+            logger.warning(
+                "dispatch.lock operator_busy request_id=%s",
+                request_id,
+            )
             raise AgentBusyError("operator busy")
         await self.operator_lock.acquire()

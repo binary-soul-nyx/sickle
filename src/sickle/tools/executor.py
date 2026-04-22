@@ -12,8 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import SandboxRejected
+from ..logs import clip_text, get_logger
 from .checker import AstChecker
 from .toolkit import get_toolkit_modules
+
+logger = get_logger("tools.executor")
 
 
 @dataclass(slots=True)
@@ -95,10 +98,16 @@ class SandboxExecutor:
 
     async def execute(self, code: str) -> ExecuteCodeResult:
         started = time.perf_counter()
+        logger.info("sandbox.execute start code_len=%s", len(code))
 
         try:
             self.checker.check(code)
         except SandboxRejected as exc:
+            logger.warning(
+                "sandbox.execute rejected code_len=%s reason=%s",
+                len(code),
+                clip_text(str(exc), max_chars=200),
+            )
             return ExecuteCodeResult(
                 success=False,
                 result={},
@@ -113,25 +122,45 @@ class SandboxExecutor:
                 timeout=self.exec_timeout,
             )
         except TimeoutError:
+            duration = self._duration_ms(started)
+            logger.warning(
+                "sandbox.execute timeout code_len=%s timeout=%ss duration_ms=%s",
+                len(code),
+                self.exec_timeout,
+                duration,
+            )
             return ExecuteCodeResult(
                 success=False,
                 result={},
                 stdout="",
                 stderr=f"TimeoutError: execution exceeded {self.exec_timeout} seconds",
-                duration_ms=self._duration_ms(started),
+                duration_ms=duration,
                 timeout=True,
             )
         except Exception as exc:  # pragma: no cover - defensive wrapper
+            duration = self._duration_ms(started)
+            logger.error(
+                "sandbox.execute unexpected_error code_len=%s error=%s duration_ms=%s",
+                len(code),
+                exc,
+                duration,
+            )
             return ExecuteCodeResult(
                 success=False,
                 result={},
                 stdout="",
                 stderr=str(exc),
-                duration_ms=self._duration_ms(started),
+                duration_ms=duration,
             )
 
         artifacts: list[Path] = []
         if len(stdout_text) > self.large_output_threshold:
+            logger.warning(
+                "sandbox.execute stdout_truncated code_len=%s stdout_len=%s threshold=%s",
+                len(code),
+                len(stdout_text),
+                self.large_output_threshold,
+            )
             artifact_path = self._write_artifact(
                 prefix="sickle-stdout-",
                 suffix=".log",
@@ -143,12 +172,19 @@ class SandboxExecutor:
                 + "\n... [truncated, full output in artifact]"
             )
 
+        duration = self._duration_ms(started)
+        logger.info(
+            "sandbox.execute done success=%s duration_ms=%s artifacts=%s",
+            success,
+            duration,
+            len(artifacts),
+        )
         return ExecuteCodeResult(
             success=success,
             result=result,
             stdout=stdout_text,
             stderr=stderr_text,
-            duration_ms=self._duration_ms(started),
+            duration_ms=duration,
             timeout=False,
             artifacts=artifacts,
         )
