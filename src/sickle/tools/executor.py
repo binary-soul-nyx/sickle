@@ -4,6 +4,7 @@ import asyncio
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 import io
+import json
 import tempfile
 import time
 import traceback
@@ -24,6 +25,15 @@ class ExecuteCodeResult:
     duration_ms: int = 0
     timeout: bool = False
     artifacts: list[Path] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ExecuteCodeCall:
+    id: str
+    kind: str
+    code: str
+    is_final: bool
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -50,6 +60,31 @@ def build_execute_code_tool_schema() -> dict[str, Any]:
             },
         },
     }
+
+
+def parse_execute_code_call(tool_call: dict[str, Any]) -> ExecuteCodeCall:
+    if tool_call.get("name") != "execute_code":
+        raise ValueError("tool call is not execute_code")
+
+    raw_arguments = tool_call.get("arguments", "{}")
+    if not isinstance(raw_arguments, str):
+        raise ValueError("execute_code arguments must be a JSON string")
+
+    payload = json.loads(raw_arguments)
+    code = payload.get("code")
+    is_final = payload.get("is_final")
+    if not isinstance(code, str):
+        raise ValueError("execute_code.code must be a string")
+    if not isinstance(is_final, bool):
+        raise ValueError("execute_code.is_final must be a bool")
+
+    return ExecuteCodeCall(
+        id=str(tool_call.get("id", "")),
+        kind="execute_code",
+        code=code,
+        is_final=is_final,
+        metadata=dict(tool_call.get("metadata", {})),
+    )
 
 
 @dataclass(slots=True)
