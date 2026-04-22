@@ -6,6 +6,8 @@ allowed_user_ids = [123456789]
 default_model = "gpt-4o"
 timeout = 60
 retry = 3
+api_base = ""
+api_key = ""
 
 [operator]
 exec_timeout = 30

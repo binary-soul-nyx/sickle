@@ -16,10 +16,19 @@ class LLMResponse:
 
 
 class LLMClient:
-    def __init__(self, default_model: str, timeout: int = 60, retry: int = 3) -> None:
+    def __init__(
+        self,
+        default_model: str,
+        timeout: int = 60,
+        retry: int = 3,
+        api_base: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
         self.default_model = default_model
         self.timeout = timeout
         self.retry = retry
+        self.api_base = api_base
+        self.api_key = api_key
 
     async def chat(
         self,
@@ -96,6 +105,15 @@ class LLMClient:
         except ImportError as exc:
             raise LLMUnavailable("litellm is not installed") from exc
 
+        kwargs = self._build_completion_kwargs(model=model, messages=messages, tools=tools)
+        return await acompletion(**kwargs)
+
+    def _build_completion_kwargs(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -103,7 +121,11 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
-        return await acompletion(**kwargs)
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        return kwargs
 
     def _normalize_response(self, raw_response: Any) -> LLMResponse:
         message = self._extract_message(raw_response)
@@ -138,6 +160,11 @@ class LLMClient:
 
         return {
             "id": str(call_id),
+            "type": "function",
+            "function": {
+                "name": str(name),
+                "arguments": arguments,
+            },
             "name": str(name),
             "arguments": arguments,
             "source": "native",

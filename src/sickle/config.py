@@ -20,6 +20,8 @@ class LLMConfig:
     default_model: str = "gpt-4o-mini"
     timeout: int = 60
     retry: int = 3
+    api_base: str | None = None
+    api_key: str | None = None
 
 
 @dataclass(slots=True)
@@ -56,6 +58,15 @@ def _parse_allowed_user_ids(value: Any) -> set[int]:
             raise ConfigError("telegram.allowed_user_ids must be a list of integers")
         ids.add(user_id)
     return ids
+
+
+def _optional_non_empty_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text
 
 
 def load_config(path: str | Path = "config.toml") -> AppConfig:
@@ -96,6 +107,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         default_model=str(llm_raw.get("default_model", "gpt-4o-mini")),
         timeout=int(llm_raw.get("timeout", 60)),
         retry=int(llm_raw.get("retry", 3)),
+        api_base=_optional_non_empty_str(llm_raw.get("api_base")),
+        api_key=_optional_non_empty_str(llm_raw.get("api_key")),
     )
     operator = OperatorConfig(
         exec_timeout=int(operator_raw.get("exec_timeout", 30)),

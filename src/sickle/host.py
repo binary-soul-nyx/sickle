@@ -49,6 +49,8 @@ class Sickle:
                 default_model=self.config.llm.default_model,
                 timeout=self.config.llm.timeout,
                 retry=self.config.llm.retry,
+                api_base=self.config.llm.api_base,
+                api_key=self.config.llm.api_key,
             )
         operator = OperatorAgent(
             llm_client=self.llm_client,
