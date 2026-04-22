@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .agents import Agent, OrchestratorAgent
+from .agents import Agent, OperatorAgent, OrchestratorAgent
 from .config import AppConfig
 from .llm import LLMClient
 from .memory import HistoryManager
@@ -15,6 +15,7 @@ from .route import (
     parse_trigger,
 )
 from .route.response import Response
+from .tools import SandboxExecutor
 
 
 @dataclass(slots=True)
@@ -38,16 +39,32 @@ class Sickle:
                 timeout=self.config.llm.timeout,
                 retry=self.config.llm.retry,
             )
+        operator = OperatorAgent(
+            llm_client=self.llm_client,
+            model=self.config.llm.default_model,
+        )
         extra_agents = self.extra_agents or {}
-        routable_agents = sorted(extra_agents.keys())
+        routable_agents = sorted({"operator", *extra_agents.keys()})
         self.orchestrator = OrchestratorAgent(
             llm_client=self.llm_client,
             model=self.config.llm.default_model,
             routable_agents=routable_agents,
         )
-        self.agents = {"orchestrator": self.orchestrator, **extra_agents}
+        self.agents = {
+            "orchestrator": self.orchestrator,
+            "operator": operator,
+            **extra_agents,
+        }
         self.runner = Runner(agents=self.agents, history=self.history)
-        self.dispatch = Dispatch(history=self.history, runner=self.runner)
+        self.dispatch = Dispatch(
+            history=self.history,
+            runner=self.runner,
+            sandbox_executor=SandboxExecutor(
+                exec_timeout=float(self.config.operator.exec_timeout),
+                large_output_threshold=self.config.operator.large_output_threshold,
+            ),
+            max_operator_failures=self.config.operator.max_consecutive_failures,
+        )
 
     def _is_allowed(self, user_id: int) -> bool:
         return user_id in self.allowed_user_ids
@@ -55,7 +72,11 @@ class Sickle:
     async def handle_message(self, user_id: int, text: str) -> Response:
         if not self._is_allowed(user_id):
             return Response.empty()
-        trigger = parse_trigger(text, available_agents=set(self.agents.keys()))
+        trigger = parse_trigger(
+            text,
+            available_agents=set(self.agents.keys()),
+            target_aliases={"op": "operator"},
+        )
         if trigger.kind == "empty":
             return Response.empty()
         if trigger.kind == "command" and trigger.command is not None:

@@ -51,6 +51,7 @@ def parse_trigger(
     raw_text: str,
     available_agents: set[str],
     command_specs: dict[str, CommandSpec] | None = None,
+    target_aliases: dict[str, str] | None = None,
 ) -> TriggerMatch:
     text = raw_text.strip()
     if not text:
@@ -64,7 +65,11 @@ def parse_trigger(
     first_token, _, remainder = text.partition(" ")
     if first_token.startswith("@") and len(first_token) > 1:
         target_name = first_token[1:].lower()
-        target_agent = _resolve_target_agent(target_name, available_agents)
+        target_agent = _resolve_target_agent(
+            target_name=target_name,
+            available_agents=available_agents,
+            target_aliases=target_aliases or {},
+        )
         if target_agent is not None:
             body = remainder.strip()
             return TriggerMatch(
@@ -131,7 +136,12 @@ def _find_command_spec(
     return None
 
 
-def _resolve_target_agent(target_name: str, available_agents: set[str]) -> str | None:
-    if target_name in available_agents:
-        return target_name
+def _resolve_target_agent(
+    target_name: str,
+    available_agents: set[str],
+    target_aliases: dict[str, str],
+) -> str | None:
+    mapped = target_aliases.get(target_name, target_name)
+    if mapped in available_agents:
+        return mapped
     return None
