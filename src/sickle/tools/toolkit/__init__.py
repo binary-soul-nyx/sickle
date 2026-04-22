@@ -22,7 +22,7 @@ def render_toolkit_docs() -> str:
         lines.append(f"## {module_name}")
         for func in _iter_public_functions(module):
             signature = inspect.signature(func)
-            lines.append(f"- `{func.__name__}{signature}`")
+            lines.append(f"- `{module_name}.{func.__name__}{signature}`")
             doc = inspect.getdoc(func) or "No documentation."
             lines.append(f"  {doc.splitlines()[0]}")
     return "\n".join(lines)
