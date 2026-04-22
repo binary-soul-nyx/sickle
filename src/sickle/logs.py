@@ -30,6 +30,8 @@ def configure_logging(level: str | None = None) -> None:
     for handler in root.handlers:
         handler.addFilter(_SickleOnlyDebugFilter())
     logging.getLogger("sickle").setLevel(numeric_level)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+    logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 def get_logger(module: str) -> logging.Logger:
