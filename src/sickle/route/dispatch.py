@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from typing import Any
 
+from ..errors import AgentBusyError
 from ..memory import HistoryManager
 from ..route.response import Response
 from ..tools import SandboxExecutor, parse_execute_code_call, parse_route_call
@@ -23,6 +25,7 @@ class Dispatch:
     history: HistoryManager
     runner: Runner
     sandbox_executor: SandboxExecutor = field(default_factory=SandboxExecutor)
+    operator_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     max_operator_failures: int = 3
     max_hops: int = 12
 
@@ -39,47 +42,75 @@ class Dispatch:
         stack: list[_RouteFrame] = []
         artifacts: list[Path] = []
         operator_failures = 0
+        operator_lock_owned = False
         hops = 0
 
-        while hops < self.max_hops:
-            hops += 1
-            turn_result = await self.runner.run_turn(active_agent)
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": turn_result.content,
-            }
-            if turn_result.tool_calls:
-                assistant_message["tool_calls"] = turn_result.tool_calls
-            self.history.append(active_agent, assistant_message)
+        if active_agent == "operator":
+            await self._acquire_operator_lock()
+            operator_lock_owned = True
 
-            execute_call = self._try_extract_execute_code(turn_result.tool_calls)
-            if execute_call is not None and active_agent == "operator":
-                exec_result = await self.sandbox_executor.execute(execute_call.code)
-                artifacts.extend(exec_result.artifacts)
-                tool_content = self._serialize_execute_result(exec_result)
-                self.history.append(
-                    "operator",
-                    {
-                        "role": "tool",
-                        "tool_call_id": execute_call.id,
-                        "content": tool_content,
-                    },
-                )
+        try:
+            while hops < self.max_hops:
+                hops += 1
+                turn_result = await self.runner.run_turn(active_agent)
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": turn_result.content,
+                }
+                if turn_result.tool_calls:
+                    assistant_message["tool_calls"] = turn_result.tool_calls
+                self.history.append(active_agent, assistant_message)
 
-                if exec_result.success:
-                    operator_failures = 0
-                else:
-                    operator_failures += 1
-
-                if operator_failures >= self.max_operator_failures:
-                    payload = json.dumps(
+                execute_call = self._try_extract_execute_code(turn_result.tool_calls)
+                if execute_call is not None and active_agent == "operator":
+                    exec_result = await self.sandbox_executor.execute(execute_call.code)
+                    artifacts.extend(exec_result.artifacts)
+                    tool_content = self._serialize_execute_result(exec_result)
+                    self.history.append(
+                        "operator",
                         {
-                            "success": False,
-                            "error": "operator repeated failures",
-                            "stderr": exec_result.stderr,
+                            "role": "tool",
+                            "tool_call_id": execute_call.id,
+                            "content": tool_content,
                         },
-                        ensure_ascii=False,
                     )
+
+                    if exec_result.success:
+                        operator_failures = 0
+                    else:
+                        operator_failures += 1
+
+                    if operator_failures >= self.max_operator_failures:
+                        payload = json.dumps(
+                            {
+                                "success": False,
+                                "error": "operator repeated failures",
+                                "stderr": exec_result.stderr,
+                            },
+                            ensure_ascii=False,
+                        )
+                        if stack:
+                            frame = stack.pop()
+                            self._append_operator_closing_message()
+                            self.history.append(
+                                frame.caller,
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": frame.tool_call_id,
+                                    "content": payload,
+                                },
+                            )
+                            active_agent = frame.caller
+                            operator_failures = 0
+                            continue
+                        return Response(
+                            text="operator repeated failures",
+                            files=artifacts,
+                        )
+
+                    if not execute_call.is_final:
+                        continue
+
                     if stack:
                         frame = stack.pop()
                         self._append_operator_closing_message()
@@ -88,97 +119,82 @@ class Dispatch:
                             {
                                 "role": "tool",
                                 "tool_call_id": frame.tool_call_id,
-                                "content": payload,
+                                "content": tool_content,
                             },
                         )
                         active_agent = frame.caller
-                        operator_failures = 0
                         continue
-                    return Response(
-                        text="operator repeated failures",
-                        files=artifacts,
-                    )
 
-                if not execute_call.is_final:
+                    # direct call: run operator for one more natural-language turn
                     continue
 
-                if stack:
-                    frame = stack.pop()
-                    self._append_operator_closing_message()
+                route_call = self._try_extract_route(turn_result.tool_calls)
+                if route_call is not None:
+                    if route_call.to not in self.runner.agents:
+                        self.history.append(
+                            active_agent,
+                            {
+                                "role": "tool",
+                                "tool_call_id": route_call.id,
+                                "content": json.dumps(
+                                    {
+                                        "success": False,
+                                        "error": f"unknown target agent: {route_call.to}",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        )
+                        continue
+
+                    if route_call.to == "operator" and not operator_lock_owned:
+                        await self._acquire_operator_lock()
+                        operator_lock_owned = True
+
+                    stack.append(_RouteFrame(caller=active_agent, tool_call_id=route_call.id))
+                    ctx.chain.append(route_call.to)
                     self.history.append(
-                        frame.caller,
+                        route_call.to,
                         {
-                            "role": "tool",
-                            "tool_call_id": frame.tool_call_id,
-                            "content": tool_content,
+                            "role": "user",
+                            "content": route_call.content,
                         },
                     )
-                    active_agent = frame.caller
+                    active_agent = route_call.to
                     continue
 
-                # direct call: run operator for one more natural-language turn
-                continue
+                if not stack:
+                    if turn_result.content:
+                        return Response(text=turn_result.content, files=artifacts)
+                    if artifacts:
+                        return Response(files=artifacts)
+                    return Response.empty()
 
-            route_call = self._try_extract_route(turn_result.tool_calls)
-            if route_call is not None:
-                if route_call.to not in self.runner.agents:
-                    self.history.append(
-                        active_agent,
-                        {
-                            "role": "tool",
-                            "tool_call_id": route_call.id,
-                            "content": json.dumps(
-                                {
-                                    "success": False,
-                                    "error": f"unknown target agent: {route_call.to}",
-                                },
-                                ensure_ascii=False,
-                            ),
-                        },
-                    )
-                    continue
-
-                stack.append(_RouteFrame(caller=active_agent, tool_call_id=route_call.id))
-                ctx.chain.append(route_call.to)
-                self.history.append(
-                    route_call.to,
+                frame = stack.pop()
+                tool_content = json.dumps(
                     {
-                        "role": "user",
-                        "content": route_call.content,
+                        "success": True,
+                        "result": {"content": turn_result.content or ""},
+                    },
+                    ensure_ascii=False,
+                )
+                self.history.append(
+                    frame.caller,
+                    {
+                        "role": "tool",
+                        "tool_call_id": frame.tool_call_id,
+                        "content": tool_content,
                     },
                 )
-                active_agent = route_call.to
-                continue
+                active_agent = frame.caller
 
-            if not stack:
-                if turn_result.content:
-                    return Response(text=turn_result.content, files=artifacts)
-                if artifacts:
-                    return Response(files=artifacts)
-                return Response.empty()
-
-            frame = stack.pop()
-            tool_content = json.dumps(
-                {
-                    "success": True,
-                    "result": {"content": turn_result.content or ""},
-                },
-                ensure_ascii=False,
+            return Response(
+                text="route loop exceeded hop limit",
+                files=artifacts,
             )
-            self.history.append(
-                frame.caller,
-                {
-                    "role": "tool",
-                    "tool_call_id": frame.tool_call_id,
-                    "content": tool_content,
-                },
-            )
-            active_agent = frame.caller
-
-        return Response(
-            text="route loop exceeded hop limit",
-            files=artifacts,
-        )
+        finally:
+            if operator_lock_owned and self.operator_lock.locked():
+                self.operator_lock.release()
 
     def _try_extract_route(
         self,
@@ -225,3 +241,8 @@ class Dispatch:
                 "content": "",
             },
         )
+
+    async def _acquire_operator_lock(self) -> None:
+        if self.operator_lock.locked():
+            raise AgentBusyError("operator busy")
+        await self.operator_lock.acquire()
