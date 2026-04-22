@@ -8,6 +8,7 @@ from .agents import Agent, OperatorAgent, OrchestratorAgent
 from .config import AppConfig
 from .errors import AgentBusyError
 from .llm import LLMClient
+from .logs import clip_text, get_logger
 from .memory import HistoryManager
 from .route import (
     DEFAULT_COMMAND_SPECS,
@@ -18,6 +19,8 @@ from .route import (
 )
 from .route.response import Response
 from .tools import SandboxExecutor
+
+logger = get_logger("host")
 
 
 @dataclass(slots=True)
@@ -44,6 +47,10 @@ class Sickle:
     def __post_init__(self) -> None:
         self.allowed_user_ids = set(self.config.telegram.allowed_user_ids)
         self.history = HistoryManager()
+        logger.debug(
+            "host.init allowed_users=%s",
+            sorted(self.allowed_user_ids),
+        )
         if self.llm_client is None:
             self.llm_client = LLMClient(
                 default_model=self.config.llm.default_model,
@@ -68,6 +75,7 @@ class Sickle:
             "operator": operator,
             **extra_agents,
         }
+        logger.debug("host.init agents=%s", sorted(self.agents.keys()))
         self.history = HistoryManager()
 
     def _is_allowed(self, user_id: int) -> bool:
@@ -80,14 +88,29 @@ class Sickle:
 
     async def handle_message(self, user_id: int, text: str) -> Response:
         if not self._is_allowed(user_id):
+            logger.debug(
+                "host.handle_message ignored user_id=%s because not_allowed", user_id
+            )
             return Response.empty()
         runtime = self._get_user_runtime(user_id)
         self.history = runtime.history
+        logger.debug(
+            "host.handle_message received user_id=%s text=%s",
+            user_id,
+            clip_text(text, max_chars=260),
+        )
 
         trigger = parse_trigger(
             text,
             available_agents=set(self.agents.keys()),
             target_aliases={"op": "operator"},
+        )
+        logger.debug(
+            "host.handle_message trigger user_id=%s kind=%s entry_agent=%s command=%s",
+            user_id,
+            trigger.kind,
+            trigger.message.entry_agent if trigger.message else None,
+            trigger.command.name if trigger.command else None,
         )
         if trigger.kind == "empty":
             return Response.empty()
@@ -101,10 +124,12 @@ class Sickle:
             return Response.empty()
 
         snapshot = runtime.history.snapshot()
+        logger.debug(
+            "host.handle_message snapshot user_id=%s snapshot=%s", user_id, snapshot
+        )
         current_task = asyncio.current_task()
-        if (
-            current_task is not None
-            and (runtime.active_task is None or runtime.active_task.done())
+        if current_task is not None and (
+            runtime.active_task is None or runtime.active_task.done()
         ):
             runtime.active_task = current_task
             runtime.active_snapshot = snapshot
@@ -113,16 +138,45 @@ class Sickle:
             user_id=user_id,
             entry_agent=trigger.message.entry_agent,
         )
+        logger.debug(
+            "host.handle_message dispatch_start user_id=%s request_id=%s entry_agent=%s",
+            user_id,
+            ctx.request_id,
+            ctx.entry_agent,
+        )
         try:
-            return await runtime.dispatch.run(ctx, trigger.message.body)
+            response = await runtime.dispatch.run(ctx, trigger.message.body)
+            logger.debug(
+                "host.handle_message dispatch_done user_id=%s request_id=%s text=%s files=%s",
+                user_id,
+                ctx.request_id,
+                clip_text(response.text or "", max_chars=200),
+                len(response.files),
+            )
+            return response
         except AgentBusyError:
             runtime.history.rollback(snapshot)
+            logger.warning(
+                "host.handle_message dispatch_busy user_id=%s request_id=%s snapshot_rollback=true",
+                user_id,
+                ctx.request_id,
+            )
             return Response.text_only("操作员正忙，请稍后再试")
         except asyncio.CancelledError:
             runtime.history.rollback(snapshot)
+            logger.warning(
+                "host.handle_message dispatch_cancelled user_id=%s request_id=%s snapshot_rollback=true",
+                user_id,
+                ctx.request_id,
+            )
             return Response.empty()
         except Exception:
             runtime.history.rollback(snapshot)
+            logger.exception(
+                "host.handle_message dispatch_failed user_id=%s request_id=%s snapshot_rollback=true",
+                user_id,
+                ctx.request_id,
+            )
             return Response.text_only("请求处理失败，请稍后重试")
         finally:
             if runtime.active_task is current_task:
@@ -136,9 +190,20 @@ class Sickle:
         args: list[str],
     ) -> Response:
         if not self._is_allowed(user_id):
+            logger.debug(
+                "host.handle_command ignored user_id=%s cmd=%s reason=not_allowed",
+                user_id,
+                cmd,
+            )
             return Response.empty()
         runtime = self._get_user_runtime(user_id)
         self.history = runtime.history
+        logger.debug(
+            "host.handle_command user_id=%s cmd=%s args=%s",
+            user_id,
+            cmd,
+            args,
+        )
         if cmd == "cancel":
             task = runtime.active_task
             snapshot = runtime.active_snapshot
@@ -147,6 +212,11 @@ class Sickle:
                 task.cancel()
                 if snapshot is not None:
                     runtime.history.rollback(snapshot)
+                logger.debug(
+                    "host.handle_command cancel_applied user_id=%s had_snapshot=%s",
+                    user_id,
+                    snapshot is not None,
+                )
                 runtime.active_task = None
                 runtime.active_snapshot = None
             return Response.empty()
@@ -163,7 +233,15 @@ class Sickle:
 
     async def handle_button(self, user_id: int, callback_id: str) -> Response:
         if not self._is_allowed(user_id):
+            logger.debug(
+                "host.handle_button ignored user_id=%s reason=not_allowed", user_id
+            )
             return Response.empty()
+        logger.debug(
+            "host.handle_button user_id=%s callback_id=%s",
+            user_id,
+            callback_id,
+        )
         return Response.empty()
 
     def _get_user_runtime(self, user_id: int) -> _UserRuntime:
@@ -191,4 +269,5 @@ class Sickle:
             operator_lock=operator_lock,
         )
         self._user_runtimes[user_id] = runtime
+        logger.debug("host.runtime created user_id=%s", user_id)
         return runtime

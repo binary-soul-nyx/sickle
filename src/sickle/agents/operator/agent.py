@@ -29,6 +29,8 @@ class OperatorAgent(Agent):
                 "Your job is to complete execution tasks by calling execute_code.",
                 "Always produce Python that defines a `result` dict.",
                 "Do not use import statements.",
+                "Only use toolkit functions with module prefixes (for example: fs.exists, fs.list_dir, fs.read, process.run).",
+                "Do not call bare names like exists/list_dir/read/run.",
                 "Follow sandbox and safety constraints strictly.",
                 "",
                 self._toolkit_docs,

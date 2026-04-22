@@ -6,6 +6,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import LLMUnavailable
+from ..logs import (
+    clip_text,
+    get_logger,
+    summarize_messages,
+    summarize_tool_calls,
+    summarize_tools,
+    to_log_json,
+)
+
+logger = get_logger("llm.client")
 
 
 @dataclass(slots=True)
@@ -37,12 +47,32 @@ class LLMClient:
         model: str | None = None,
     ) -> LLMResponse:
         target_model = model or self.default_model
+        tools_list = tools or []
+        logger.debug(
+            "llm.chat start model=%s timeout=%s retry=%s api_base=%s has_api_key=%s tools=%s messages=%s",
+            target_model,
+            self.timeout,
+            self.retry,
+            self.api_base or "",
+            bool(self.api_key),
+            summarize_tools(tools_list),
+            to_log_json(summarize_messages(messages)),
+        )
 
         try:
-            return await self._chat_with_retry(target_model, messages, tools or [])
+            result = await self._chat_with_retry(target_model, messages, tools_list)
+            logger.debug(
+                "llm.chat done model=%s content=%s tool_calls=%s",
+                target_model,
+                clip_text(result.content or "", max_chars=220),
+                to_log_json(summarize_tool_calls(result.tool_calls)),
+            )
+            return result
         except LLMUnavailable:
+            logger.exception("llm.chat unavailable model=%s", target_model)
             raise
         except Exception as exc:  # pragma: no cover - defensive wrapper
+            logger.exception("llm.chat unexpected_error model=%s", target_model)
             raise LLMUnavailable(str(exc)) from exc
 
     async def _chat_with_retry(
@@ -62,6 +92,11 @@ class LLMClient:
             reraise=True,
         ):
             with attempt:
+                logger.debug(
+                    "llm.retry attempt=%s model=%s",
+                    attempt.retry_state.attempt_number,
+                    model,
+                )
                 raw_response = await self._run_completion(
                     model=model,
                     messages=messages,
@@ -80,6 +115,7 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(1, self.retry + 1):
             try:
+                logger.debug("llm.manual_retry attempt=%s model=%s", attempt, model)
                 raw_response = await self._run_completion(
                     model=model,
                     messages=messages,
@@ -88,6 +124,13 @@ class LLMClient:
                 return self._normalize_response(raw_response)
             except Exception as exc:
                 last_error = exc
+                logger.warning(
+                    "llm.manual_retry failed attempt=%s/%s model=%s error=%s",
+                    attempt,
+                    self.retry,
+                    model,
+                    exc,
+                )
                 if attempt == self.retry:
                     break
                 await asyncio.sleep(min(2 ** (attempt - 1), 8))
@@ -106,7 +149,10 @@ class LLMClient:
             raise LLMUnavailable("litellm is not installed") from exc
 
         kwargs = self._build_completion_kwargs(model=model, messages=messages, tools=tools)
-        return await acompletion(**kwargs)
+        logger.debug("llm.request payload=%s", to_log_json(kwargs, max_chars=12000))
+        raw = await acompletion(**kwargs)
+        logger.debug("llm.response raw=%s", to_log_json(raw, max_chars=12000))
+        return raw
 
     def _build_completion_kwargs(
         self,
@@ -131,7 +177,16 @@ class LLMClient:
         message = self._extract_message(raw_response)
         content = self._get_field(message, "content")
         tool_calls_raw = self._get_field(message, "tool_calls") or []
+        logger.debug(
+            "llm.parse message content=%s raw_tool_calls=%s",
+            clip_text(str(content) if content is not None else "", max_chars=220),
+            to_log_json(tool_calls_raw),
+        )
         tool_calls = [self._normalize_tool_call(item) for item in tool_calls_raw]
+        logger.debug(
+            "llm.parse normalized_tool_calls=%s",
+            to_log_json(summarize_tool_calls(tool_calls)),
+        )
         return LLMResponse(content=content, tool_calls=tool_calls, raw=raw_response)
 
     def _extract_message(self, raw_response: Any) -> Any:
@@ -158,7 +213,7 @@ class LLMClient:
         else:
             arguments = str(arguments)
 
-        return {
+        normalized = {
             "id": str(call_id),
             "type": "function",
             "function": {
@@ -170,6 +225,8 @@ class LLMClient:
             "source": "native",
             "metadata": {},
         }
+        logger.debug("llm.parse normalize_tool_call value=%s", to_log_json(normalized))
+        return normalized
 
     def _get_field(self, obj: Any, key: str) -> Any:
         if isinstance(obj, dict):

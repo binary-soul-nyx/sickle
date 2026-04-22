@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from sickle.logs import clip_text, get_logger
 from sickle.route.response import Response
 
 from .renderer import render_response
+
+logger = get_logger("entries.telegram.handlers")
 
 
 def _get_sickle(context: Any) -> Any:
@@ -21,6 +24,12 @@ async def handle_text_message(update: Any, context: Any) -> None:
         return
 
     text = getattr(message, "text", "") or ""
+    logger.debug(
+        "telegram.text_message user_id=%s chat_id=%s text=%s",
+        user.id,
+        getattr(getattr(update, "effective_chat", None), "id", None),
+        clip_text(text, max_chars=320),
+    )
     sickle = _get_sickle(context)
     response = await sickle.handle_message(user.id, text)
     await render_response(update, context, response)
@@ -40,6 +49,14 @@ async def handle_command(update: Any, context: Any) -> None:
     token, _, raw_args = command_text.partition(" ")
     cmd = token.split("@", maxsplit=1)[0].lower()
     args = raw_args.split() if raw_args else []
+    logger.debug(
+        "telegram.command user_id=%s chat_id=%s cmd=%s args=%s raw=%s",
+        user.id,
+        getattr(getattr(update, "effective_chat", None), "id", None),
+        cmd,
+        args,
+        clip_text(raw, max_chars=240),
+    )
 
     if cmd == "start":
         response = await _handle_start(update, context)
@@ -57,6 +74,12 @@ async def handle_callback_query(update: Any, context: Any) -> None:
 
     await query.answer()
     callback_id = getattr(query, "data", "") or ""
+    logger.debug(
+        "telegram.callback user_id=%s chat_id=%s callback_id=%s",
+        user.id,
+        getattr(getattr(update, "effective_chat", None), "id", None),
+        callback_id,
+    )
     sickle = _get_sickle(context)
     response = await sickle.handle_button(user.id, callback_id)
     await render_response(update, context, response)
